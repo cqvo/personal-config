@@ -1,1 +1,143 @@
+name: Build and Sync Containers
 
+on:
+  schedule:
+    - cron: '0 0 * * *'  # Runs at midnight every day
+  
+  workflow_dispatch:
+    inputs:
+      container_path:
+        description: 'Specific container to build (relative path from containers/)'
+        required: false
+        type: string
+  
+  push:
+    branches: [ main ]
+    paths:
+      - 'containers/**'
+      - '.github/workflows/build-containers.yml'
+      - 'shared/**'
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: Detect changed containers
+        id: set-matrix
+        run: |
+          if [ -n "${{ github.event.inputs.container_path }}" ]; then
+            # If manually triggered with a specific container, only build that one
+            CONTAINERS_JSON="[\"${{ github.event.inputs.container_path }}\"]"
+          elif [ "${{ github.event_name }}" == "schedule" ]; then
+            # On schedule, check all containers
+            CONTAINERS_JSON=$(ls -d containers/*/ | sed 's|containers/||' | sed 's|/$||' | jq -R -s -c 'split("\n")[:-1]')
+          else
+            # On push, only check containers with changes
+            CONTAINERS_JSON=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} | 
+                             grep -E "^containers/" | 
+                             sed 's|containers/\([^/]*\)/.*|\1|' | 
+                             sort -u | 
+                             jq -R -s -c 'split("\n")[:-1]')
+          fi
+          
+          echo "matrix=${CONTAINERS_JSON}" >> $GITHUB_OUTPUT
+  
+  sync-and-build:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.matrix != '[]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    
+    strategy:
+      matrix:
+        container: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      
+      - name: Configure Git
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+      
+      - name: Read sync configuration
+        id: sync-config
+        run: |
+          CONFIG_FILE="containers/${{ matrix.container }}/sync-config.json"
+          if [ -f "$CONFIG_FILE" ]; then
+            OWNER=$(jq -r '.owner' "$CONFIG_FILE")
+            REPO=$(jq -r '.repo' "$CONFIG_FILE")
+            BRANCH=$(jq -r '.branch // "main"' "$CONFIG_FILE")
+            TARGET_DIR=$(jq -r '.targetDir // "containers/${{ matrix.container }}/source"' "$CONFIG_FILE")
+            
+            echo "owner=$OWNER" >> $GITHUB_OUTPUT
+            echo "repo=$REPO" >> $GITHUB_OUTPUT
+            echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+            echo "target_dir=$TARGET_DIR" >> $GITHUB_OUTPUT
+            echo "has_config=true" >> $GITHUB_OUTPUT
+          else
+            echo "No sync config found for ${{ matrix.container }}, skipping sync"
+            echo "has_config=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Sync with original repository
+        if: steps.sync-config.outputs.has_config == 'true'
+        run: |
+          # Ensure target directory exists
+          mkdir -p "${{ steps.sync-config.outputs.target_dir }}"
+          
+          # Clone the original repository to a temporary location
+          git clone --depth 1 --branch ${{ steps.sync-config.outputs.branch }} \
+            https://github.com/${{ steps.sync-config.outputs.owner }}/${{ steps.sync-config.outputs.repo }}.git \
+            temp_repo
+          
+          # Copy the contents to the target directory
+          rm -rf "${{ steps.sync-config.outputs.target_dir }}/"*
+          cp -r temp_repo/* "${{ steps.sync-config.outputs.target_dir }}/"
+          
+          # Cleanup
+          rm -rf temp_repo
+          
+          # Commit changes if any
+          git add "${{ steps.sync-config.outputs.target_dir }}"
+          if git diff --staged --quiet; then
+            echo "No changes detected for ${{ matrix.container }}"
+          else
+            git commit -m "Sync ${{ matrix.container }} with upstream changes"
+            git push
+          fi
+      
+      # Set up Docker Buildx
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+      
+      # Login to GitHub Container Registry
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      # Build and push Docker image
+      - name: Build and push
+        uses: docker/build-push-action@v4
+        with:
+          context: containers/${{ matrix.container }}
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/${{ matrix.container }}:latest
+            ghcr.io/${{ github.repository_owner }}/${{ matrix.container }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
