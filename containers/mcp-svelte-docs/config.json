@@ -1,0 +1,14 @@
+{
+  "owner": "spences10",
+  "repository": "mcp-svelte-docs",
+  "description": "MCP server for Svelte 5 documentation",
+  "license": "MIT",
+  "version": "1.0.0",
+  "build": {
+    "commands": [
+      "npm ci",
+      "npm run build"
+    ],
+    "port": 3000
+  }
+}
