@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "github": {
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "project-specific-token-here"
+      }
+    },
+    "mcp-supabase": {
+      "env": {
+        "SUPABASE_ACCESS_TOKEN": "project-specific-token-here"
+      }
+    }
+  }
+} 

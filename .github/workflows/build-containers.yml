@@ -35,7 +35,7 @@ jobs:
     needs: determine-containers
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
     strategy:
       matrix: ${{ fromJson(needs.determine-containers.outputs.matrix) }}
@@ -52,22 +52,56 @@ jobs:
           if [ -f "$CONFIG_FILE" ]; then
             REPO=$(jq -r '.repository' "$CONFIG_FILE")
             OWNER=$(jq -r '.owner' "$CONFIG_FILE")
+            BRANCH=$(jq -r '.branch // "main"' "$CONFIG_FILE")
+            LAST_COMMIT=$(jq -r '.last_built_commit // ""' "$CONFIG_FILE")
             echo "repo=$REPO" >> $GITHUB_OUTPUT
             echo "owner=$OWNER" >> $GITHUB_OUTPUT
+            echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+            echo "last_commit=$LAST_COMMIT" >> $GITHUB_OUTPUT
           else
             echo "::error::Missing config file for ${{ matrix.container }}"
             exit 1
           fi
+
+      # Get the latest commit hash from the source repository
+      - name: Get latest commit hash
+        id: get_hash
+        run: |
+          LATEST_HASH=$(curl -s -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ steps.config.outputs.owner }}/${{ steps.config.outputs.repo }}/commits/${{ steps.config.outputs.branch }}" \
+            | jq -r '.sha')
+          echo "latest_hash=$LATEST_HASH" >> $GITHUB_OUTPUT
+
+          # Compare hashes and set build flag
+          if [ "$LATEST_HASH" != "${{ steps.config.outputs.last_commit }}" ]; then
+            echo "needs_build=true" >> $GITHUB_OUTPUT
+          else
+            echo "needs_build=false" >> $GITHUB_OUTPUT
+          fi
       
-      # Checkout the original repository
+      # Only proceed with build steps if there are changes or manual trigger
+      - name: Check if build needed
+        id: check_build
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] || [[ "${{ steps.get_hash.outputs.needs_build }}" == "true" ]]; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          else
+            echo "No changes detected for ${{ matrix.container }}, skipping build"
+            echo "should_build=false" >> $GITHUB_OUTPUT
+          fi
+
+      # Checkout the original repository if building
       - name: Checkout original repository
+        if: steps.check_build.outputs.should_build == 'true'
         uses: actions/checkout@v3
         with:
           repository: ${{ steps.config.outputs.owner }}/${{ steps.config.outputs.repo }}
           path: source-repo
+          ref: ${{ steps.config.outputs.branch }}
       
-      # Cache node modules
+      # Cache node modules if building
       - name: Cache Node Modules
+        if: steps.check_build.outputs.should_build == 'true'
         uses: actions/cache@v3
         with:
           path: ~/.npm
@@ -75,25 +109,29 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-node-${{ matrix.container }}-
       
-      # Copy Dockerfile to the source repository
+      # Copy Dockerfile if building
       - name: Copy Dockerfile
+        if: steps.check_build.outputs.should_build == 'true'
         run: |
           cp containers/${{ matrix.container }}/Dockerfile source-repo/
       
-      # Set up Docker Buildx
+      # Set up Docker Buildx if building
       - name: Set up Docker Buildx
+        if: steps.check_build.outputs.should_build == 'true'
         uses: docker/setup-buildx-action@v2
       
-      # Login to GitHub Container Registry
+      # Login to GitHub Container Registry if building
       - name: Login to GitHub Container Registry
+        if: steps.check_build.outputs.should_build == 'true'
         uses: docker/login-action@v2
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       
-      # Build and push Docker image
+      # Build and push Docker image if needed
       - name: Build and push
+        if: steps.check_build.outputs.should_build == 'true'
         uses: docker/build-push-action@v4
         with:
           context: source-repo
@@ -106,3 +144,19 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ steps.config.outputs.owner }}/${{ steps.config.outputs.repo }}
             org.opencontainers.image.description=Container for ${{ matrix.container }}
+
+      # Update config.json with the new commit hash after successful build
+      - name: Update config with new commit hash
+        if: steps.check_build.outputs.should_build == 'true'
+        run: |
+          CONFIG_FILE="containers/${{ matrix.container }}/config.json"
+          jq --arg hash "${{ steps.get_hash.outputs.latest_hash }}" '.last_built_commit = $hash' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
+          
+          # Configure git
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          
+          # Commit and push the updated config
+          git add "$CONFIG_FILE"
+          git commit -m "Update last built commit hash for ${{ matrix.container }}"
+          git push

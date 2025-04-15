@@ -1,0 +1,16 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Svelte 5 Documentation MCP Rule
+
+## How to use:
+Use the MCP to search Svelte 5 documentation instead of guessing. This ensures accuracy and prevents hallucinations.
+
+## When to use it:
+- When writing Svelte and unsure about changes from version 4 to 5.
+- When encountering errors or unexpected behavior, even if you think you know the cause.
+- Whenever a clarification is needed regarding Svelte 5 syntax, API, or best practices.
+
+**Do not guess. Always verify with the MCP.**

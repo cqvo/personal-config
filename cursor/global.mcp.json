@@ -1,0 +1,54 @@
+{
+  "mcpServers": {
+    "github": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "GITHUB_PERSONAL_ACCESS_TOKEN",
+        "ghcr.io/github/github-mcp-server"
+      ],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "INSERT YOUR PAT HERE OR USE ${GITHUB_PERSONAL_ACCESS_TOKEN}"
+      }
+    },
+    "mcp-svelte-docs": {
+      "command": "docker",
+      "args": [
+        "run",
+        "--rm",
+        "-p",
+        "3010:3000",
+        "ghcr.io/cqvo/mcp-svelte-docs"
+      ],
+      "env": {
+        "DEBUG": "false"
+      },
+      "disabled": false,
+      "autoApprove": [
+        "svelte_pattern",
+        "svelte5_feature",
+        "svelte5_common_mistakes"
+      ]
+    },
+    "mcp-supabase": {
+      "command": "docker",
+      "args": [
+        "run",
+        "--rm",
+        "-e",
+        "SUPABASE_ACCESS_TOKEN",
+        "-p",
+        "3020:3000",
+        "ghcr.io/cqvo/mcp-supabase"
+      ],
+      "env": {
+        "DEBUG": "false",
+        "SUPABASE_ACCESS_TOKEN": "${SUPABASE_ACCESS_TOKEN}"
+      },
+      "disabled": false
+    }
+  }
+}
